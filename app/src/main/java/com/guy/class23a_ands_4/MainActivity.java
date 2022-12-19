@@ -20,6 +20,28 @@ public class MainActivity extends AppCompatActivity {
 
         start = findViewById(R.id.start);
         start.setOnClickListener(v -> startService());
+
+    }
+
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+
+        if (getIntent().getAction().equals(LocationService.MAIN_ACTION)) {
+            // came from notification
+        }
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+
+
+        if (getIntent().getAction().equals(LocationService.MAIN_ACTION)) {
+
+        }
+
     }
 
     private void startService() {
