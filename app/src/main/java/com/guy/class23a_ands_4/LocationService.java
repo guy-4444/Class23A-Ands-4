@@ -1,6 +1,9 @@
 package com.guy.class23a_ands_4;
 
+import static com.google.android.gms.location.LocationServices.getFusedLocationProviderClient;
+
 import android.annotation.TargetApi;
+import android.app.ActivityManager;
 import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
@@ -8,20 +11,42 @@ import android.app.PendingIntent;
 import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
+import android.content.pm.PackageManager;
 import android.graphics.BitmapFactory;
 import android.graphics.Color;
+import android.location.LocationManager;
 import android.os.Build;
 import android.os.IBinder;
+import android.os.Looper;
+import android.os.PowerManager;
 import android.util.Log;
 
+import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
+import androidx.core.app.ActivityCompat;
 import androidx.core.app.NotificationCompat;
 import androidx.core.app.NotificationManagerCompat;
+import androidx.localbroadcastmanager.content.LocalBroadcastManager;
+
+import com.google.android.gms.location.FusedLocationProviderClient;
+import com.google.android.gms.location.LocationAvailability;
+import com.google.android.gms.location.LocationCallback;
+import com.google.android.gms.location.LocationRequest;
+import com.google.android.gms.location.LocationResult;
+import com.google.android.gms.tasks.OnCompleteListener;
+import com.google.android.gms.tasks.Task;
+import com.google.gson.Gson;
 
 import java.text.SimpleDateFormat;
+import java.util.List;
 import java.util.Locale;
+import java.util.Random;
 
 public class LocationService extends Service {
+
+    public static final String BROADCAST_NEW_LOCATION = "BROADCAST_NEW_LOCATION";
+    public static final String BROADCAST_NEW_LOCATION_EXTRA_KEY = "BROADCAST_NEW_LOCATION_EXTRA_KEY";
+
 
     public static final String START_FOREGROUND_SERVICE = "START_FOREGROUND_SERVICE";
     public static final String STOP_FOREGROUND_SERVICE = "STOP_FOREGROUND_SERVICE";
@@ -32,18 +57,42 @@ public class LocationService extends Service {
     public static String CHANNEL_ID = "com.guy.class23a_ands_4.CHANNEL_ID_FOREGROUND";
     public static String MAIN_ACTION = "com.guy.class23a_ands_4.locationservice.action.main";
     private NotificationCompat.Builder notificationBuilder;
+    private boolean isServiceRunningRightNow = false;
+
+    private PowerManager.WakeLock wakeLock;
+    private PowerManager powerManager;
+
+    private FusedLocationProviderClient fusedLocationProviderClient;
 
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
 
+        if (intent == null) {
+            stopForeground(true);
+            return START_NOT_STICKY;
+        }
 
+
+        Log.d("pttt", "onStartCommand A");
         if (intent.getAction().equals(START_FOREGROUND_SERVICE)) {
+            if (isServiceRunningRightNow) {
+                return START_STICKY;
+            }
+            Log.d("pttt", "onStartCommand B");
+
+
+            isServiceRunningRightNow = true;
             notifyToUserForForegroundService();
             startRecording();
 
         } else if (intent.getAction().equals(STOP_FOREGROUND_SERVICE)) {
             stopRecording();
+            stopForeground(true);
+            stopSelf();
+
+            isServiceRunningRightNow = false;
+            return START_NOT_STICKY;
         }
 
         return START_STICKY;
@@ -66,13 +115,83 @@ public class LocationService extends Service {
     };
 
     private void startRecording() {
-        Log.d("pttt", Thread.currentThread().getName() + " - startRecording()");
+        // Keep CPU working
+        powerManager = (PowerManager) getSystemService(POWER_SERVICE);
+        wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "PassiveApp:tag");
+        wakeLock.acquire();
+
 
         MCT5.get().cycle(cycleTicker, MCT5.CONTINUOUSLY_REPEATS, 5000);
+
+        // Run GPS
+        fusedLocationProviderClient = getFusedLocationProviderClient(this);
+        if (ActivityCompat.checkSelfPermission(this, android.Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED && ActivityCompat.checkSelfPermission(this, android.Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
+            LocationRequest locationRequest = LocationRequest.create();
+            locationRequest.setSmallestDisplacement(0.5f);
+            locationRequest.setInterval(1000);
+            locationRequest.setFastestInterval(500);
+            //locationRequest.setMaxWaitTime(TimeUnit.MINUTES.toMillis(1));
+            locationRequest.setPriority(LocationRequest.PRIORITY_HIGH_ACCURACY);
+
+            // new Google API SDK v11 uses getFusedLocationProviderClient(this)
+            fusedLocationProviderClient.requestLocationUpdates(locationRequest, locationCallback, Looper.myLooper());
+        }
+
     }
 
+    private LocationCallback locationCallback = new LocationCallback() {
+
+        @Override
+        public void onLocationResult(LocationResult locationResult) {
+            super.onLocationResult(locationResult);
+
+            if (locationResult.getLastLocation() != null) {
+                Log.d("pttt", ":getLastLocation");
+
+                Intent intent = new Intent(BROADCAST_NEW_LOCATION);
+                Loc loc = new Loc()
+                        .setLat(locationResult.getLastLocation().getLatitude())
+                        .setLon(locationResult.getLastLocation().getLongitude())
+                        .setSpeed(locationResult.getLastLocation().getSpeed() / 3.6);
+                String json = new Gson().toJson(loc);
+                intent.putExtra(BROADCAST_NEW_LOCATION_EXTRA_KEY, json);
+                LocalBroadcastManager.getInstance(LocationService.this).sendBroadcast(intent);
+            } else {
+                Log.d("pttt", "Location information isn't available.");
+            }
+        }
+
+        @Override
+        public void onLocationAvailability(LocationAvailability locationAvailability) {
+            super.onLocationAvailability(locationAvailability);
+        }
+    };
+
     private void stopRecording() {
+        // Release CPU Holding
+        if (wakeLock != null) {
+            if (wakeLock.isHeld()) {
+                wakeLock.release();
+            }
+        }
+
         MCT5.get().remove(cycleTicker);
+
+        // Stop GPS
+        if (fusedLocationProviderClient != null) {
+            Task<Void> task = fusedLocationProviderClient.removeLocationUpdates(locationCallback);
+            task.addOnCompleteListener(new OnCompleteListener<Void>() {
+                @Override
+                public void onComplete(@NonNull Task<Void> task) {
+                    if (task.isSuccessful()) {
+                        Log.d("pttt", "stop Location Callback removed.");
+                        stopSelf();
+                    } else {
+                        Log.d("pttt", "stop Failed to remove Location Callback.");
+                    }
+                }
+            });
+        }
     }
 
     private void updateNotification(String content) {
@@ -161,4 +280,14 @@ public class LocationService extends Service {
         }
     }
 
+    public static boolean isMyServiceRunning(Context context) {
+        ActivityManager manager = (ActivityManager) context.getSystemService(Context.ACTIVITY_SERVICE);
+        List<ActivityManager.RunningServiceInfo> runs = manager.getRunningServices(Integer.MAX_VALUE);
+        for (ActivityManager.RunningServiceInfo service : manager.getRunningServices(Integer.MAX_VALUE)) {
+            if (LocationService.class.getName().equals(service.service.getClassName())) {
+                return true;
+            }
+        }
+        return false;
+    }
 }
